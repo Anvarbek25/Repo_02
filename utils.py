@@ -1,6 +1,6 @@
 """
 utils.py
-Shared utility functions used across the API.
+Shared utility functions used across all routers.
 """
 
 from fastapi import Request
@@ -8,15 +8,17 @@ from fastapi import Request
 
 def get_client_ip(request: Request) -> str:
     """
-    Extracts the real client IP address from the request.
+    Extracts the real client IP address from the incoming request.
 
-    When running behind a reverse proxy or cloud load balancer,
-    the actual client IP is forwarded in the X-Forwarded-For header.
-    If that header is absent, we fall back to the direct connection IP.
+    When the API runs behind Render's reverse proxy (which it always does),
+    the actual visitor IP is forwarded via the X-Forwarded-For header.
+    The header can contain a chain: "client_ip, proxy1_ip, proxy2_ip"
+    — we always want the first value (the original client).
+
+    Falls back to the direct connection IP if the header is absent
+    (useful for local development).
     """
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        # X-Forwarded-For can contain a chain of IPs: "client, proxy1, proxy2"
-        # The first one is always the original client
         return forwarded_for.split(",")[0].strip()
     return request.client.host

@@ -1,6 +1,7 @@
-# Bahafix Backend API
+# Bahafix Backend API v2.0
 
-Python + FastAPI + MySQL backend for the Bahafix website.
+Python + FastAPI + PostgreSQL backend for the Bahafix website.
+Deployed on Render (web service + managed PostgreSQL).
 
 ---
 
@@ -8,126 +9,135 @@ Python + FastAPI + MySQL backend for the Bahafix website.
 
 ```
 bahafix_api/
-├── main.py              # FastAPI app entry point
-├── database.py          # MySQL connection pool
-├── auth.py              # Bearer token authentication
-├── utils.py             # Shared helpers (IP extraction)
-├── email_job.py         # Background email dispatch job
-├── schema.sql           # MySQL database setup script
+├── main.py              # FastAPI app — entry point, CORS, routers
+├── database.py          # PostgreSQL connection (psycopg2)
+├── auth.py              # Bearer token authentication dependency
+├── utils.py             # Shared helpers (client IP extraction)
+├── email_sender.py      # Gmail SMTP email dispatch
+├── schema.sql           # Run once to create all database tables
 ├── requirements.txt     # Python dependencies
-├── .env.example         # Environment variable template
+├── .env.example         # Environment variable template (copy to .env)
 └── routers/
-    ├── phone_clicks.py  # POST/GET /api/phone-clicks
-    ├── enquiries.py     # POST/GET /api/enquiries
-    └── blogs.py         # CRUD    /api/blogs
+    ├── phone_clicks.py  # POST + GET /api/phone-clicks
+    ├── enquiries.py     # POST + GET /api/enquiries
+    └── blogs.py         # CRUD /api/blogs
 ```
 
 ---
 
-## Setup
+## Local Development Setup
 
-### 1. Clone / copy the project files to your server
-
-### 2. Install Python dependencies
+### 1. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Set up the MySQL database
-
-Log into MySQL and run the schema file:
-
-```bash
-mysql -u root -p < schema.sql
-```
-
-This creates the `bahafix` database and all tables.
-
-### 4. Configure environment variables
-
-Copy the example file and fill in your values:
+### 2. Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set:
-- `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — your MySQL credentials
-- `ADMIN_TOKEN` — a long random string (your API password for protected endpoints)
-- `GMAIL_ADDRESS` — the Gmail account that sends notifications
-- `GMAIL_APP_PASSWORD` — 16-character App Password from Google Account settings
-- `NOTIFY_EMAIL` — the email address that receives enquiry notifications
-- `FRONTEND_ORIGIN` — your website domain (e.g. https://bahafix.com.au)
+Open `.env` and fill in:
 
-#### How to get a Gmail App Password:
-1. Go to your Google Account → Security
-2. Enable 2-Step Verification (required)
-3. Go to Security → App Passwords
-4. Create a new App Password for "Mail"
-5. Copy the 16-character password into `.env`
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `ADMIN_TOKEN` | Your secret Bearer token (min 32 chars) |
+| `GMAIL_ADDRESS` | Gmail account that sends notifications |
+| `GMAIL_APP_PASSWORD` | 16-char Google App Password (not login password) |
+| `NOTIFY_EMAIL` | Business owner email that receives enquiries |
+| `FRONTEND_ORIGIN` | Website domain for CORS (e.g. https://bahafix.com.au) |
 
----
-
-## Running the API
-
-### Start the API server
-
+**Generating a secure ADMIN_TOKEN:**
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-For development with auto-reload on file changes:
+**Getting a Gmail App Password:**
+1. Go to myaccount.google.com → Security
+2. Enable 2-Step Verification (required)
+3. Go to Security → App Passwords
+4. Create an App Password for "Mail"
+5. Copy the 16-character password into `.env`
+
+### 3. Set up the database
+
+Create a local PostgreSQL database, then run the schema:
+
+```bash
+psql -U your_user -d your_database -f schema.sql
+```
+
+### 4. Start the server
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-### Start the email background job (separate terminal / process)
+Visit **http://localhost:8000/docs** to test all endpoints interactively.
 
+---
+
+## Render Deployment
+
+### Step 1 — Push to GitHub
+Push this project to a GitHub repository.
+
+### Step 2 — Create PostgreSQL on Render
+- Render dashboard → New → PostgreSQL
+- Copy the **External Database URL** for local testing
+- Render will inject `DATABASE_URL` automatically into your web service
+
+### Step 3 — Run the schema
 ```bash
-python email_job.py
+psql "<your External Database URL>" -f schema.sql
 ```
 
-This must run alongside the API. On a production server, use a process
-manager like `supervisor` or `systemd` to keep both running automatically.
+### Step 4 — Create Web Service on Render
+- Render dashboard → New → Web Service
+- Connect your GitHub repository
+- Runtime: **Python 3**
+- Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+### Step 5 — Set environment variables in Render dashboard
+Set all variables from `.env.example` under your web service's Environment tab.
+Do NOT upload your `.env` file — set them directly in the Render UI.
+
+### Step 6 — Verify
+Visit `https://your-render-url.onrender.com/docs` to confirm the API is live.
 
 ---
 
-## API Documentation
+## API Endpoints
 
-Once the server is running, visit:
-
-```
-http://localhost:8000/docs
-```
-
-This opens the interactive FastAPI docs page where you can test every
-endpoint directly in your browser — including protected endpoints by
-clicking the lock icon and entering your Bearer token.
-
----
-
-## Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | /api/phone-clicks | Public | Record phone button click |
-| GET | /api/phone-clicks | Token | Get clicks by date range |
-| POST | /api/enquiries | Public | Submit contact form |
-| GET | /api/enquiries | Token | Get enquiries by date range |
-| POST | /api/blogs | Token | Create blog post |
-| GET | /api/blogs/latest | Public | Get latest 20 posts |
-| GET | /api/blogs/{id} | Token | Get single post by ID |
-| PUT | /api/blogs/{id} | Token | Update blog post |
-| DELETE | /api/blogs/{id} | Token | Delete blog post |
+| # | Method | Path | Auth | Description |
+|---|--------|------|------|-------------|
+| 1 | POST | `/api/phone-clicks` | Public | Record phone button click |
+| 2 | GET | `/api/phone-clicks` | Token | Get click records by date range |
+| 3 | POST | `/api/enquiries` | Public | Submit enquiry (sends email, stores no PII) |
+| 4 | GET | `/api/enquiries` | Token | Get submission log (analytics only) |
+| 5 | POST | `/api/blogs` | Token | Create blog post |
+| 6 | GET | `/api/blogs/latest` | Public | Get latest 20 posts |
+| 7 | GET | `/api/blogs/{id}` | Token | Get single post by ID |
+| 8 | PUT | `/api/blogs/{id}` | Token | Update blog post |
+| 9 | DELETE | `/api/blogs/{id}` | Token | Delete blog post |
 
 ---
 
-## Using Protected Endpoints in Postman
+## Using Protected Endpoints
 
-1. Open the request in Postman
-2. Go to the **Headers** tab
-3. Add: `Authorization` → `Bearer your_admin_token_here`
+**Via /docs page (easiest):**
+1. Open `/docs`
+2. Click the **Authorize** 🔒 button at the top right
+3. Enter your token — FastAPI will include it in all subsequent requests
 
-Or use the **Authorization** tab → Type: **Bearer Token** → paste your token.
+**Via Postman:**
+- Tab: **Authorization** → Type: **Bearer Token** → paste your ADMIN_TOKEN
+
+**Via curl:**
+```bash
+curl -H "Authorization: Bearer your_token_here" \
+     "https://your-api.onrender.com/api/blogs/latest"
+```

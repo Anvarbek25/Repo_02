@@ -1,46 +1,57 @@
 """
 database.py
-Manages MySQL connection pooling for the Bahafix API.
+PostgreSQL connection management for the Bahafix API.
+
+Uses a simple connection-per-request pattern with psycopg2.
+Render's managed PostgreSQL requires SSL — handled automatically
+via the sslmode=require parameter appended to the DATABASE_URL.
+
+Usage in any endpoint:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ...")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 """
 
-import mysql.connector
-from mysql.connector import pooling
-from dotenv import load_dotenv
 import os
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
 
 load_dotenv()
-
-# Connection pool — keeps a set of reusable connections open
-# so each request doesn't have to open and close a new one
-_pool = pooling.MySQLConnectionPool(
-    pool_name="bahafix_pool",
-    pool_size=5,
-    host=os.getenv("DB_HOST", "localhost"),
-    port=int(os.getenv("DB_PORT", 3306)),
-    database=os.getenv("DB_NAME", "bahafix"),
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    autocommit=False,
-    charset="utf8mb4",
-)
 
 
 def get_connection():
     """
-    Returns a connection from the pool.
-    Always use this inside a 'with' block or try/finally
-    to ensure the connection is returned to the pool.
+    Returns a new psycopg2 connection to the PostgreSQL database.
 
-    Usage:
-        conn = get_connection()
-        try:
-            cursor = conn.cursor(dictionary=True)
-            ...
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()  # returns to pool, does not actually close
+    - Reads DATABASE_URL from environment variables.
+    - Appends sslmode=require for Render compatibility.
+    - Uses RealDictCursor so rows are returned as dicts (column: value)
+      rather than tuples — making the code more readable.
     """
-    return _pool.get_connection()
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL environment variable is not set")
+
+    # Render's DATABASE_URL sometimes uses 'postgres://' prefix.
+    # psycopg2 requires 'postgresql://' — fix it if needed.
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+    # Append SSL requirement for Render (ignored if already present)
+    if "sslmode" not in database_url:
+        separator = "&" if "?" in database_url else "?"
+        database_url = f"{database_url}{separator}sslmode=require"
+
+    return psycopg2.connect(
+        database_url,
+        cursor_factory=psycopg2.extras.RealDictCursor,
+    )

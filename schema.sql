@@ -1,63 +1,56 @@
 -- ============================================================
--- Bahafix Backend — MySQL Database Schema
--- Run this file once to set up all tables
+-- Bahafix Backend v2.0 — PostgreSQL Schema
+-- Run once against your Render PostgreSQL instance to create all tables.
+--
+-- How to run on Render:
+--   psql "<your DATABASE_URL>" -f schema.sql
 -- ============================================================
 
-CREATE DATABASE IF NOT EXISTS bahafix
-  CHARACTER SET utf8mb4
-  COLLATE utf8mb4_unicode_ci;
+-- Set timezone for this session
+SET timezone = 'Australia/Melbourne';
 
-USE bahafix;
-
--- ─── Blogs ───────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS Blogs (
-    id         INT          NOT NULL AUTO_INCREMENT,
+-- ─── blogs ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS blogs (
+    id         SERIAL       PRIMARY KEY,
     location   VARCHAR(255) NOT NULL,
     subject    VARCHAR(500) NOT NULL,
-    text       LONGTEXT     NOT NULL,
-    created_at DATETIME     NOT NULL DEFAULT (CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne')),
-    updated_at DATETIME     NOT NULL DEFAULT (CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne'))
-                                     ON UPDATE (CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne')),
-    PRIMARY KEY (id)
-) ENGINE=InnoDB;
+    text       TEXT         NOT NULL,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
 
--- ─── Tags ────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS Tags (
-    id   INT          NOT NULL AUTO_INCREMENT,
+-- ─── tags ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS tags (
+    id   SERIAL       PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_tag_name (name)
-) ENGINE=InnoDB;
+    CONSTRAINT uq_tag_name UNIQUE (name)
+);
 
--- ─── BlogTags (junction) ─────────────────────────────────────
-CREATE TABLE IF NOT EXISTS BlogTags (
-    blog_id INT NOT NULL,
-    tag_id  INT NOT NULL,
-    PRIMARY KEY (blog_id, tag_id),
-    CONSTRAINT fk_blogtags_blog FOREIGN KEY (blog_id) REFERENCES Blogs(id) ON DELETE CASCADE,
-    CONSTRAINT fk_blogtags_tag  FOREIGN KEY (tag_id)  REFERENCES Tags(id)  ON DELETE CASCADE
-) ENGINE=InnoDB;
+-- ─── blog_tags (junction) ────────────────────────────────────
+CREATE TABLE IF NOT EXISTS blog_tags (
+    blog_id INTEGER NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
+    tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
+    PRIMARY KEY (blog_id, tag_id)
+);
 
--- ─── PhoneClicks ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS PhoneClicks (
-    id         INT         NOT NULL AUTO_INCREMENT,
+-- ─── phone_clicks ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS phone_clicks (
+    id         SERIAL      PRIMARY KEY,
     ip_address VARCHAR(45) NOT NULL,
-    clicked_at DATETIME    NOT NULL DEFAULT (CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne')),
-    PRIMARY KEY (id),
-    INDEX idx_phoneclicks_ip_date (ip_address, clicked_at)
-) ENGINE=InnoDB;
+    clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
--- ─── Enquiries ───────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS Enquiries (
-    id           INT          NOT NULL AUTO_INCREMENT,
-    name         VARCHAR(255) NOT NULL,
-    phone        VARCHAR(50)  NOT NULL,
-    email        VARCHAR(255) NOT NULL,
-    message      VARCHAR(400) NOT NULL,
-    ip_address   VARCHAR(45)  NOT NULL,
-    submitted_at DATETIME     NOT NULL DEFAULT (CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne')),
-    sent_at      DATETIME     NULL,
-    PRIMARY KEY (id),
-    INDEX idx_enquiries_sent    (sent_at),
-    INDEX idx_enquiries_ip_date (ip_address, submitted_at)
-) ENGINE=InnoDB;
+CREATE INDEX IF NOT EXISTS idx_phone_clicks_ip_date
+    ON phone_clicks (ip_address, clicked_at);
+
+-- ─── enquiries ───────────────────────────────────────────────
+-- Privacy note: No PII stored. Name/phone/email/message are
+-- sent via email immediately and never persisted here.
+CREATE TABLE IF NOT EXISTS enquiries (
+    id           SERIAL      PRIMARY KEY,
+    ip_address   VARCHAR(45) NOT NULL,
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_enquiries_ip_date
+    ON enquiries (ip_address, submitted_at);

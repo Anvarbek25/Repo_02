@@ -2,8 +2,9 @@
 routers/enquiries.py
 
 Endpoints:
-  POST /api/enquiries  — public, stores enquiry, enforces IP rate limit
-  GET  /api/enquiries  — token protected, returns records by date range
+  POST /api/enquiries  — public, validates form, sends Gmail immediately,
+                         stores only ip + timestamp (no PII in DB)
+  GET  /api/enquiries  — token protected, returns anonymous log for analytics
 """
 
 from fastapi import APIRouter, Request, Depends, Query, HTTPException, status
@@ -12,6 +13,7 @@ from datetime import date
 from database import get_connection
 from auth import require_token
 from utils import get_client_ip
+from email_sender import send_enquiry_email
 
 router = APIRouter(prefix="/api/enquiries", tags=["Enquiries"])
 
@@ -23,33 +25,35 @@ class EnquiryRequest(BaseModel):
     email:   EmailStr
     message: str
 
-    # Validators — FastAPI runs these automatically before the endpoint executes
     @field_validator("name")
     @classmethod
-    def name_not_empty(cls, v):
-        if not v.strip():
+    def validate_name(cls, v):
+        v = v.strip()
+        if not v:
             raise ValueError("Name cannot be empty")
         if len(v) > 255:
             raise ValueError("Name cannot exceed 255 characters")
-        return v.strip()
+        return v
 
     @field_validator("phone")
     @classmethod
-    def phone_not_empty(cls, v):
-        if not v.strip():
+    def validate_phone(cls, v):
+        v = v.strip()
+        if not v:
             raise ValueError("Phone cannot be empty")
         if len(v) > 50:
             raise ValueError("Phone cannot exceed 50 characters")
-        return v.strip()
+        return v
 
     @field_validator("message")
     @classmethod
-    def message_not_empty(cls, v):
-        if not v.strip():
+    def validate_message(cls, v):
+        v = v.strip()
+        if not v:
             raise ValueError("Message cannot be empty")
         if len(v) > 400:
             raise ValueError("Message cannot exceed 400 characters")
-        return v.strip()
+        return v
 
 
 # ─── POST /api/enquiries ─────────────────────────────────────────────────────
@@ -58,27 +62,33 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
     """
     Accepts a customer contact form submission.
 
-    - Validates all fields (FastAPI handles this via the EnquiryRequest model)
-    - Checks IP rate limit: max 10 submissions per IP per Melbourne day
-    - Stores the record with sent_at = NULL (email sent by background job)
-    - Returns 429 if rate limit exceeded
+    Process:
+      1. Validate all fields (FastAPI handles this automatically via EnquiryRequest)
+      2. Check IP rate limit — max 10 submissions per IP per Melbourne day
+      3. Compose and send email via Gmail immediately
+      4. If email succeeds: store anonymous log (ip + timestamp only) and return 201
+      5. If email fails: return 500, do NOT store a log record
+
+    Privacy: name, phone, email, message are NEVER written to the database.
+    They exist in memory only for the duration of this request.
     """
     ip = get_client_ip(request)
 
     conn = get_connection()
     try:
-        cursor = conn.cursor(dictionary=True)
+        cur = conn.cursor()
 
-        # Count how many enquiries this IP has submitted today (Melbourne date)
-        cursor.execute(
+        # ── Rate limit check ──────────────────────────────────────────────
+        cur.execute(
             """
-            SELECT COUNT(*) AS daily_count FROM Enquiries
+            SELECT COUNT(*) AS daily_count FROM enquiries
             WHERE ip_address = %s
-              AND DATE(submitted_at) = DATE(CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne'))
+              AND (submitted_at AT TIME ZONE 'Australia/Melbourne')::date =
+                  (NOW() AT TIME ZONE 'Australia/Melbourne')::date
             """,
             (ip,),
         )
-        count = cursor.fetchone()["daily_count"]
+        count = cur.fetchone()["daily_count"]
 
         if count >= 10:
             raise HTTPException(
@@ -86,13 +96,24 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
                 detail="Maximum enquiries reached for today from this location.",
             )
 
-        # Insert enquiry — sent_at is left NULL, email job will populate it
-        cursor.execute(
-            """
-            INSERT INTO Enquiries (name, phone, email, message, ip_address, submitted_at, sent_at)
-            VALUES (%s, %s, %s, %s, %s, CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne'), NULL)
-            """,
-            (payload.name, payload.phone, payload.email, payload.message, ip),
+        # ── Send email immediately ────────────────────────────────────────
+        sent = send_enquiry_email(
+            name=payload.name,
+            phone=payload.phone,
+            email=str(payload.email),
+            message=payload.message,
+        )
+
+        if not sent:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send enquiry. Please try again.",
+            )
+
+        # ── Store anonymous log record (no PII) ───────────────────────────
+        cur.execute(
+            "INSERT INTO enquiries (ip_address, submitted_at) VALUES (%s, NOW())",
+            (ip,),
         )
         conn.commit()
 
@@ -102,12 +123,12 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
         }
 
     except HTTPException:
-        raise  # re-raise rate limit error without wrapping it
+        raise  # Re-raise HTTP exceptions without wrapping
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
 
@@ -115,13 +136,14 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
 @router.get("")
 def get_enquiries(
     start: date = Query(..., description="Start date inclusive (YYYY-MM-DD)"),
-    end: date   = Query(..., description="End date inclusive (YYYY-MM-DD)"),
-    page: int   = Query(1,  ge=1,   description="Page number"),
+    end:   date = Query(..., description="End date inclusive (YYYY-MM-DD)"),
+    page:  int  = Query(1,  ge=1,         description="Page number"),
     limit: int  = Query(50, ge=1, le=200, description="Records per page (max 200)"),
     _token: str = Depends(require_token),
 ):
     """
-    Returns enquiry records filtered by date range.
+    Returns the anonymous enquiry submission log filtered by date range.
+    Only id, ip_address, and submitted_at are returned — no PII exists in DB.
     Requires Bearer token authentication.
     """
     if end < start:
@@ -131,44 +153,44 @@ def get_enquiries(
 
     conn = get_connection()
     try:
-        cursor = conn.cursor(dictionary=True)
+        cur = conn.cursor()
 
-        cursor.execute(
+        cur.execute(
             """
-            SELECT COUNT(*) AS total FROM Enquiries
-            WHERE DATE(submitted_at) BETWEEN %s AND %s
+            SELECT COUNT(*) AS total FROM enquiries
+            WHERE (submitted_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN %s AND %s
             """,
             (start, end),
         )
-        total = cursor.fetchone()["total"]
+        total = cur.fetchone()["total"]
 
-        cursor.execute(
+        cur.execute(
             """
-            SELECT id, name, phone, email, message, ip_address, submitted_at, sent_at
-            FROM Enquiries
-            WHERE DATE(submitted_at) BETWEEN %s AND %s
+            SELECT
+                id,
+                ip_address,
+                submitted_at AT TIME ZONE 'Australia/Melbourne' AS submitted_at
+            FROM enquiries
+            WHERE (submitted_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN %s AND %s
             ORDER BY submitted_at DESC
             LIMIT %s OFFSET %s
             """,
             (start, end, limit, offset),
         )
-        records = cursor.fetchall()
+        rows = cur.fetchall()
 
-        for r in records:
-            if r["submitted_at"]:
-                r["submitted_at"] = r["submitted_at"].isoformat()
-            if r["sent_at"]:
-                r["sent_at"] = r["sent_at"].isoformat()
+        records = []
+        for r in rows:
+            records.append({
+                "id":           r["id"],
+                "ip_address":   r["ip_address"],
+                "submitted_at": r["submitted_at"].isoformat() if r["submitted_at"] else None,
+            })
 
-        return {
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "data": records,
-        }
+        return {"total": total, "page": page, "limit": limit, "data": records}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
+        cur.close()
         conn.close()

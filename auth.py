@@ -2,11 +2,17 @@
 auth.py
 Bearer token authentication dependency for protected endpoints.
 
-How it works:
-  - Protected endpoints declare `token: str = Depends(require_token)`
-  - FastAPI automatically extracts the Authorization header
-  - If the token matches ADMIN_TOKEN in .env, the request proceeds
-  - Otherwise a 401 Unauthorized response is returned immediately
+Usage — add this to any endpoint that requires protection:
+    from auth import require_token
+    from fastapi import Depends
+
+    @router.get("/something")
+    def my_endpoint(_token: str = Depends(require_token)):
+        ...
+
+FastAPI will automatically extract the Authorization header,
+validate the token, and return 401 if it's missing or wrong.
+The endpoint function only runs if the token is valid.
 """
 
 import os
@@ -20,17 +26,19 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 
 def require_token(authorization: str = Header(...)):
     """
-    FastAPI dependency that validates the Bearer token.
-    Add `token: str = Depends(require_token)` to any endpoint
-    that should be protected.
+    Validates the Bearer token from the Authorization header.
+    Raises HTTP 401 if the token is missing, malformed, or incorrect.
     """
+    if not ADMIN_TOKEN:
+        raise RuntimeError("ADMIN_TOKEN environment variable is not set")
+
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header. Expected: Bearer <token>",
         )
 
-    token = authorization.split(" ", 1)[1]
+    token = authorization.split(" ", 1)[1].strip()
 
     if token != ADMIN_TOKEN:
         raise HTTPException(

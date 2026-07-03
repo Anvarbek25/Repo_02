@@ -7,6 +7,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, Request, Depends, Query, HTTPException, status
+from fastapi.responses import JSONResponse
 from datetime import date
 from database import get_connection
 from auth import require_token
@@ -19,45 +20,39 @@ router = APIRouter(prefix="/api/phone-clicks", tags=["Phone Clicks"])
 @router.post("", status_code=status.HTTP_201_CREATED)
 def record_phone_click(request: Request):
     """
-    Records a phone call button click from the website.
+    Records a phone button click from the website.
 
-    - Extracts the visitor's IP address automatically
-    - Checks if this IP has already been recorded today (Melbourne time)
-    - If yes: returns 200 without inserting a duplicate
-    - If no:  inserts a new record and returns 201
+    Extracts the visitor IP automatically.
+    Stores a maximum of one record per IP per Melbourne calendar day.
+    Duplicate clicks are silently discarded — returns 200 instead of 201.
     """
     ip = get_client_ip(request)
 
     conn = get_connection()
     try:
-        cursor = conn.cursor(dictionary=True)
+        cur = conn.cursor()
 
-        # Check for an existing record from this IP today (Melbourne date)
-        cursor.execute(
+        # Check if this IP already has a record for today (Melbourne date)
+        cur.execute(
             """
-            SELECT id FROM PhoneClicks
+            SELECT id FROM phone_clicks
             WHERE ip_address = %s
-              AND DATE(clicked_at) = DATE(CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne'))
+              AND (clicked_at AT TIME ZONE 'Australia/Melbourne')::date = 
+                  (NOW() AT TIME ZONE 'Australia/Melbourne')::date
             LIMIT 1
             """,
             (ip,),
         )
-        existing = cursor.fetchone()
+        existing = cur.fetchone()
 
         if existing:
-            # Already recorded today — return 200 silently, no duplicate inserted
-            from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
                 content={"status": "duplicate", "message": "Already recorded for today"},
             )
 
-        # Insert new click record
-        cursor.execute(
-            """
-            INSERT INTO PhoneClicks (ip_address, clicked_at)
-            VALUES (%s, CONVERT_TZ(NOW(), 'UTC', 'Australia/Melbourne'))
-            """,
+        cur.execute(
+            "INSERT INTO phone_clicks (ip_address, clicked_at) VALUES (%s, NOW())",
             (ip,),
         )
         conn.commit()
@@ -68,7 +63,7 @@ def record_phone_click(request: Request):
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
 
@@ -76,13 +71,14 @@ def record_phone_click(request: Request):
 @router.get("")
 def get_phone_clicks(
     start: date = Query(..., description="Start date inclusive (YYYY-MM-DD)"),
-    end: date   = Query(..., description="End date inclusive (YYYY-MM-DD)"),
-    page: int   = Query(1,   ge=1,   description="Page number"),
+    end:   date = Query(..., description="End date inclusive (YYYY-MM-DD)"),
+    page:  int  = Query(1,   ge=1,         description="Page number"),
     limit: int  = Query(100, ge=1, le=500, description="Records per page (max 500)"),
     _token: str = Depends(require_token),
 ):
     """
     Returns phone click records filtered by date range.
+    Dates are matched against Melbourne local time.
     Requires Bearer token authentication.
     """
     if end < start:
@@ -92,45 +88,44 @@ def get_phone_clicks(
 
     conn = get_connection()
     try:
-        cursor = conn.cursor(dictionary=True)
+        cur = conn.cursor()
 
-        # Total count for pagination metadata
-        cursor.execute(
+        cur.execute(
             """
-            SELECT COUNT(*) AS total FROM PhoneClicks
-            WHERE DATE(clicked_at) BETWEEN %s AND %s
+            SELECT COUNT(*) AS total FROM phone_clicks
+            WHERE (clicked_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN %s AND %s
             """,
             (start, end),
         )
-        total = cursor.fetchone()["total"]
+        total = cur.fetchone()["total"]
 
-        # Paginated records
-        cursor.execute(
+        cur.execute(
             """
-            SELECT id, ip_address, clicked_at
-            FROM PhoneClicks
-            WHERE DATE(clicked_at) BETWEEN %s AND %s
+            SELECT
+                id,
+                ip_address,
+                clicked_at AT TIME ZONE 'Australia/Melbourne' AS clicked_at
+            FROM phone_clicks
+            WHERE (clicked_at AT TIME ZONE 'Australia/Melbourne')::date BETWEEN %s AND %s
             ORDER BY clicked_at DESC
             LIMIT %s OFFSET %s
             """,
             (start, end, limit, offset),
         )
-        records = cursor.fetchall()
+        rows = cur.fetchall()
 
-        # Convert datetime objects to ISO strings for JSON serialisation
-        for r in records:
-            if r["clicked_at"]:
-                r["clicked_at"] = r["clicked_at"].isoformat()
+        records = []
+        for r in rows:
+            records.append({
+                "id":         r["id"],
+                "ip_address": r["ip_address"],
+                "clicked_at": r["clicked_at"].isoformat() if r["clicked_at"] else None,
+            })
 
-        return {
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "data": records,
-        }
+        return {"total": total, "page": page, "limit": limit, "data": records}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
