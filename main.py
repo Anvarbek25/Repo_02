@@ -23,6 +23,10 @@ from routers import phone_clicks, enquiries, blogs
 
 load_dotenv()
 
+# ---- PASTE THE TWO LINES HERE ----
+import create_tables
+create_tables.build_production_tables()
+
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,

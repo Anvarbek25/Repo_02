@@ -1,77 +1,42 @@
-"""
-create_tables.py
-Run this ONCE to create all database tables in your PostgreSQL instance.
-
-Local:
-    python create_tables.py
-
-On Render (via Shell tab in your web service dashboard):
-    python create_tables.py
-"""
-
 import os
-from dotenv import load_dotenv
-from database import get_connection
+import psycopg2
 
-load_dotenv()
+def build_production_tables():
+    """Automatically loads and runs schema.sql on Render startup"""
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        print("⚠️ database auto-setup skipped: DATABASE_URL not found.")
+        return
 
-SQL = """
-CREATE TABLE IF NOT EXISTS blogs (
-    id         SERIAL       PRIMARY KEY,
-    location   VARCHAR(255) NOT NULL,
-    subject    VARCHAR(500) NOT NULL,
-    text       TEXT         NOT NULL,
-    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-);
+    # Fix connection prefix for psycopg2 compatibility
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-CREATE TABLE IF NOT EXISTS tags (
-    id   SERIAL       PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    CONSTRAINT uq_tag_name UNIQUE (name)
-);
+    # Inject SSL requirement
+    if "sslmode" not in database_url:
+        separator = "&" if "?" in database_url else "?"
+        database_url = f"{database_url}{separator}sslmode=require"
 
-CREATE TABLE IF NOT EXISTS blog_tags (
-    blog_id INTEGER NOT NULL REFERENCES blogs(id) ON DELETE CASCADE,
-    tag_id  INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
-    PRIMARY KEY (blog_id, tag_id)
-);
+    # Verify if schema file is present in deployment package
+    if not os.path.exists("schema.sql"):
+        print("⚠️ database auto-setup skipped: schema.sql file is missing.")
+        return
 
-CREATE TABLE IF NOT EXISTS phone_clicks (
-    id         SERIAL      PRIMARY KEY,
-    ip_address VARCHAR(45) NOT NULL,
-    clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_phone_clicks_ip_date
-    ON phone_clicks (ip_address, clicked_at);
-
-CREATE TABLE IF NOT EXISTS enquiries (
-    id           SERIAL      PRIMARY KEY,
-    ip_address   VARCHAR(45) NOT NULL,
-    submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_enquiries_ip_date
-    ON enquiries (ip_address, submitted_at);
-"""
-
-def create_tables():
-    print("Connecting to database...")
-    conn = get_connection()
     try:
+        print("🚀 [STARTUP] Initializing database migration...")
+        conn = psycopg2.connect(database_url)
         cur = conn.cursor()
-        print("Creating tables...")
-        cur.execute(SQL)
+        
+        with open("schema.sql", "r", encoding="utf-8") as f:
+            cur.execute(f.read())
+            
         conn.commit()
-        print("Done. All tables created successfully.")
+        print("🎉 [STARTUP] Database schema successfully synced!")
     except Exception as e:
-        conn.rollback()
-        print(f"Error: {e}")
-        raise
+        print(f"❌ [STARTUP] Database initialization failed: {e}")
     finally:
-        cur.close()
-        conn.close()
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 if __name__ == "__main__":
-    create_tables()
+    build_production_tables()
