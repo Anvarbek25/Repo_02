@@ -1,32 +1,31 @@
 """
 email_sender.py
-Sends customer enquiry notification emails via Gmail SMTP.
+Sends customer enquiry notification emails via Resend (https://resend.com).
 
-Called synchronously from POST /api/enquiries.
-If this fails, the endpoint returns HTTP 500 and no log record is stored.
+Resend uses HTTPS (port 443) which works on Render's free tier,
+unlike Gmail SMTP (port 587) which is blocked.
 
-Gmail setup:
-  1. Enable 2-Step Verification on the sending Gmail account.
-  2. Go to myaccount.google.com → Security → App Passwords.
-  3. Create an App Password for "Mail".
-  4. Set GMAIL_APP_PASSWORD in your .env or Render environment variables.
-     (This is NOT your Gmail login password — it's the 16-char app password.)
+Resend setup:
+  1. Sign up at https://resend.com (free — 3,000 emails/month)
+  2. Go to API Keys → Create API Key
+  3. Set RESEND_API_KEY in your Render environment variables
+  4. Set RESEND_FROM_EMAIL to your verified sender address
+     (on free tier you can use: onboarding@resend.dev for testing,
+      or verify your own domain for production)
 """
 
 import os
-import smtplib
+import resend
 import logging
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 
 load_dotenv()
 
 log = logging.getLogger(__name__)
 
-GMAIL_ADDRESS     = os.getenv("GMAIL_ADDRESS")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-NOTIFY_EMAIL      = os.getenv("NOTIFY_EMAIL")
+resend.api_key     = os.getenv("RESEND_API_KEY")
+RESEND_FROM_EMAIL  = os.getenv("RESEND_FROM_EMAIL")
+NOTIFY_EMAIL       = os.getenv("NOTIFY_EMAIL")
 
 
 def send_enquiry_email(name: str, phone: str, email: str, message: str) -> bool:
@@ -43,29 +42,6 @@ def send_enquiry_email(name: str, phone: str, email: str, message: str) -> bool:
         True if the email was sent successfully, False otherwise.
     """
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"New Enquiry from {name} — Bahafix Website"
-        msg["From"]    = GMAIL_ADDRESS
-        msg["To"]      = NOTIFY_EMAIL
-
-        # ── Plain text version ────────────────────────────────────────────
-        plain = f"""
-New customer enquiry received via the Bahafix website.
-
-─────────────────────────────────────
-  Name:   {name}
-  Phone:  {phone}
-  Email:  {email}
-─────────────────────────────────────
-
-Message:
-{message}
-
-─────────────────────────────────────
-Automated notification — Bahafix Website
-        """.strip()
-
-        # ── HTML version (renders nicely in Gmail) ────────────────────────
         html = f"""
 <html>
   <body style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
@@ -117,15 +93,12 @@ Automated notification — Bahafix Website
 </html>
         """.strip()
 
-        msg.attach(MIMEText(plain, "plain"))
-        msg.attach(MIMEText(html, "html"))
-
-        # ── Send via Gmail SMTP with STARTTLS ─────────────────────────────
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_ADDRESS, NOTIFY_EMAIL, msg.as_string())
+        resend.Emails.send({
+            "from":    RESEND_FROM_EMAIL,
+            "to":      NOTIFY_EMAIL,
+            "subject": f"New Enquiry from {name} — Bahafix Website",
+            "html":    html,
+        })
 
         log.info(f"Enquiry email sent successfully to {NOTIFY_EMAIL}")
         return True
