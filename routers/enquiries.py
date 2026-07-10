@@ -2,75 +2,27 @@
 routers/enquiries.py
 
 Endpoints:
-  POST /api/enquiries  — public, validates form, sends Gmail immediately,
-                         stores only ip + timestamp (no PII in DB)
+  POST /api/enquiries  — public, logs IP + timestamp only (no body required)
+                         Email is handled entirely by EmailJS on the frontend.
   GET  /api/enquiries  — token protected, returns anonymous log for analytics
 """
 
 from fastapi import APIRouter, Request, Depends, Query, HTTPException, status
-from pydantic import BaseModel, EmailStr, field_validator
 from datetime import date
 from database import get_connection
 from auth import require_token
 from utils import get_client_ip
-from email_sender import send_enquiry_email
 
 router = APIRouter(prefix="/api/enquiries", tags=["Enquiries"])
 
 
-# ─── Request model ───────────────────────────────────────────────────────────
-class EnquiryRequest(BaseModel):
-    name:    str
-    phone:   str
-    email:   EmailStr
-    message: str
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, v):
-        v = v.strip()
-        if not v:
-            raise ValueError("Name cannot be empty")
-        if len(v) > 255:
-            raise ValueError("Name cannot exceed 255 characters")
-        return v
-
-    @field_validator("phone")
-    @classmethod
-    def validate_phone(cls, v):
-        v = v.strip()
-        if not v:
-            raise ValueError("Phone cannot be empty")
-        if len(v) > 50:
-            raise ValueError("Phone cannot exceed 50 characters")
-        return v
-
-    @field_validator("message")
-    @classmethod
-    def validate_message(cls, v):
-        v = v.strip()
-        if not v:
-            raise ValueError("Message cannot be empty")
-        if len(v) > 400:
-            raise ValueError("Message cannot exceed 400 characters")
-        return v
-
-
 # ─── POST /api/enquiries ─────────────────────────────────────────────────────
 @router.post("", status_code=status.HTTP_201_CREATED)
-def submit_enquiry(payload: EnquiryRequest, request: Request):
+def log_enquiry(request: Request):
     """
-    Accepts a customer contact form submission.
-
-    Process:
-      1. Validate all fields (FastAPI handles this automatically via EnquiryRequest)
-      2. Check IP rate limit — max 10 submissions per IP per Melbourne day
-      3. Compose and send email via Gmail immediately
-      4. If email succeeds: store anonymous log (ip + timestamp only) and return 201
-      5. If email fails: return 500, do NOT store a log record
-
-    Privacy: name, phone, email, message are NEVER written to the database.
-    They exist in memory only for the duration of this request.
+    Fire-and-forget endpoint called by the frontend after EmailJS succeeds.
+    No request body required — just logs the IP address and timestamp.
+    Max 10 logs per IP per Melbourne day.
     """
     ip = get_client_ip(request)
 
@@ -78,7 +30,7 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
     try:
         cur = conn.cursor()
 
-        # ── Rate limit check ──────────────────────────────────────────────
+        # Rate limit check
         cur.execute(
             """
             SELECT COUNT(*) AS daily_count FROM enquiries
@@ -93,37 +45,19 @@ def submit_enquiry(payload: EnquiryRequest, request: Request):
         if count >= 10:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Maximum enquiries reached for today from this location.",
+                detail="Rate limit exceeded.",
             )
 
-        # ── Send email immediately ────────────────────────────────────────
-        sent = send_enquiry_email(
-            name=payload.name,
-            phone=payload.phone,
-            email=str(payload.email),
-            message=payload.message,
-        )
-
-        if not sent:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send enquiry. Please try again.",
-            )
-
-        # ── Store anonymous log record (no PII) ───────────────────────────
         cur.execute(
             "INSERT INTO enquiries (ip_address, submitted_at) VALUES (%s, NOW())",
             (ip,),
         )
         conn.commit()
 
-        return {
-            "status": "received",
-            "message": "Your enquiry has been received. We will be in touch shortly.",
-        }
+        return {"status": "logged"}
 
     except HTTPException:
-        raise  # Re-raise HTTP exceptions without wrapping
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -142,8 +76,7 @@ def get_enquiries(
     _token: str = Depends(require_token),
 ):
     """
-    Returns the anonymous enquiry submission log filtered by date range.
-    Only id, ip_address, and submitted_at are returned — no PII exists in DB.
+    Returns anonymous enquiry log filtered by date range.
     Requires Bearer token authentication.
     """
     if end < start:
