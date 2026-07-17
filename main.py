@@ -51,6 +51,9 @@ app = FastAPI(
 # The Render-assigned URL is included for testing before a custom domain is set.
 allowed_origins = [
     os.getenv("FRONTEND_ORIGIN", "https://bahafix.com.au"),
+    "https://bahafix.com.au",
+    "https://www.bahafix.com.au",
+    "https://bahafix.onrender.com",   
     "http://localhost:3000",
     "http://localhost:5500",
     "http://127.0.0.1:5500",
